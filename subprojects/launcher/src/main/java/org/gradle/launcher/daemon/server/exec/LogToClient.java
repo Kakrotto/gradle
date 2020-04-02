@@ -30,9 +30,9 @@ import org.gradle.launcher.daemon.protocol.Build;
 import org.gradle.launcher.daemon.server.api.DaemonCommandExecution;
 import org.gradle.launcher.daemon.server.api.DaemonConnection;
 
-import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class LogToClient extends BuildCommandOnly {
 
@@ -68,10 +68,10 @@ public class LogToClient extends BuildCommandOnly {
 
     private class AsynchronousLogDispatcher extends Thread {
         private final CountDownLatch completionLock = new CountDownLatch(1);
-        private final Queue<OutputEvent> eventQueue = new ConcurrentLinkedQueue<OutputEvent>();
+        private final LinkedBlockingQueue<OutputEvent> eventQueue = new LinkedBlockingQueue<>();
         private final DaemonConnection connection;
         private final OutputEventListener listener;
-        private volatile boolean shouldStop;
+        private final AtomicBoolean shouldStop = new AtomicBoolean();
         private boolean unableToSend;
 
         private AsynchronousLogDispatcher(DaemonConnection conn, final LogLevel buildLogLevel) {
@@ -104,19 +104,14 @@ public class LogToClient extends BuildCommandOnly {
         @Override
         public void run() {
             try {
-                while (!shouldStop) {
-                    OutputEvent event = eventQueue.poll();
-                    if (event == null) {
-                        Thread.sleep(10);
-                    } else {
-                        dispatchAsync(event);
-                    }
+                while (!shouldStop.get()) {
+                    dispatchAsync(eventQueue.take());
                 }
             } catch (InterruptedException ex) {
                 // we must not use interrupt() because it would automatically
                 // close the connection (sending data from an interrupted thread
                 // automatically closes the connection)
-                shouldStop = true;
+                shouldStop.set(true);
             }
             sendRemainingEvents();
             completionLock.countDown();
@@ -136,7 +131,7 @@ public class LogToClient extends BuildCommandOnly {
             try {
                 connection.logEvent(event);
             } catch (Exception ex) {
-                shouldStop = true;
+                shouldStop.set(true);
                 unableToSend = true;
                 //Ignore. It means the client has disconnected so no point sending him any log output.
                 //we should be checking if client still listens elsewhere anyway.
@@ -145,7 +140,8 @@ public class LogToClient extends BuildCommandOnly {
 
         public void waitForCompletion() {
             loggingOutput.removeOutputEventListener(listener);
-            shouldStop = true;
+            shouldStop.set(true);
+            Thread.currentThread().interrupt();
             try {
                 completionLock.await();
             } catch (InterruptedException e) {

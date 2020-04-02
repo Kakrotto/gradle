@@ -68,15 +68,11 @@ public class IncrementalCompileTask implements JavaCompiler.CompilationTask {
             try {
                 return delegate.call();
             } finally {
-                persistMappingFile(collector.getMapping());
+                collector.persistMapping(mappingFile);
             }
         } else {
             throw new UnsupportedOperationException("Unexpected Java compile task : " + delegate.getClass().getName());
         }
-    }
-
-    void persistMappingFile(Map<String, Collection<String>> mapping) {
-        SourceClassesMappingFileAccessor.writeSourceClassesMappingFile(mappingFile, mapping);
     }
 
     private static class ClassNameCollector implements TaskListener {
@@ -96,37 +92,49 @@ public class IncrementalCompileTask implements JavaCompiler.CompilationTask {
         @Override
         public void finished(TaskEvent e) {
             JavaFileObject sourceFile = e.getSourceFile();
-            if (sourceFile != null && sourceFile.getKind() == JavaFileObject.Kind.SOURCE) {
+            if (isSourceFile(sourceFile)) {
                     File asSourceFile = new File(sourceFile.getName());
-                    if (isClassGenerationPhase(e) && asSourceFile.exists()) {
-                        Optional<String> relativePath = findRelativePath(asSourceFile);
-                        if (relativePath.isPresent()) {
-                            String key = relativePath.get();
-                            TypeElement typeElement = e.getTypeElement();
-                            Name name = typeElement.getQualifiedName();
-                            if (typeElement instanceof Symbol.TypeSymbol) {
-                                Symbol.TypeSymbol symbol = (Symbol.TypeSymbol) typeElement;
-                                name = symbol.flatName();
-                            }
-                            String symbol = normalizeName(name);
-                            registerMapping(key, symbol);
-                        }
+                    if (isClassGenerationPhase(e)) {
+                        processSourceFile(e, asSourceFile);
                     } else if (isPackageInfoFile(e, asSourceFile)) {
-                        Optional<String> relativePath = findRelativePath(asSourceFile);
-                        if (relativePath.isPresent()) {
-                            String key = relativePath.get();
-                            String pkgInfo = key.substring(0, key.lastIndexOf(".java")).replace('/', '.');
-                            registerMapping(key, pkgInfo);
-                        }
+                        processPackageInfo(asSourceFile);
                     }
             }
         }
 
-        public Optional<String> findRelativePath(File asSourceFile) {
+        private static boolean isSourceFile(JavaFileObject sourceFile) {
+            return sourceFile != null && sourceFile.getKind() == JavaFileObject.Kind.SOURCE;
+        }
+
+        private void processSourceFile(TaskEvent e, File sourceFile) {
+            Optional<String> relativePath = findRelativePath(sourceFile);
+            if (relativePath.isPresent()) {
+                String key = relativePath.get();
+                TypeElement typeElement = e.getTypeElement();
+                Name name = typeElement.getQualifiedName();
+                if (typeElement instanceof Symbol.TypeSymbol) {
+                    Symbol.TypeSymbol symbol = (Symbol.TypeSymbol) typeElement;
+                    name = symbol.flatName();
+                }
+                String symbol = normalizeName(name);
+                registerMapping(key, symbol);
+            }
+        }
+
+        private void processPackageInfo(File sourceFile) {
+            Optional<String> relativePath = findRelativePath(sourceFile);
+            if (relativePath.isPresent()) {
+                String key = relativePath.get();
+                String pkgInfo = key.substring(0, key.lastIndexOf(".java")).replace('/', '.');
+                registerMapping(key, pkgInfo);
+            }
+        }
+
+        private Optional<String> findRelativePath(File asSourceFile) {
             return relativePaths.computeIfAbsent(asSourceFile, compilationSourceDirs::relativize);
         }
 
-        public String normalizeName(Name name) {
+        private static String normalizeName(Name name) {
             String symbol = name.toString();
             if (symbol.endsWith("module-info")) {
                 symbol = "module-info";
@@ -134,11 +142,11 @@ public class IncrementalCompileTask implements JavaCompiler.CompilationTask {
             return symbol;
         }
 
-        public boolean isPackageInfoFile(TaskEvent e, File asSourceFile) {
+        private static boolean isPackageInfoFile(TaskEvent e, File asSourceFile) {
             return e.getKind() == TaskEvent.Kind.ANALYZE && "package-info.java".equals(asSourceFile.getName());
         }
 
-        public boolean isClassGenerationPhase(TaskEvent e) {
+        private static boolean isClassGenerationPhase(TaskEvent e) {
             return e.getKind() == TaskEvent.Kind.GENERATE;
         }
 
@@ -151,8 +159,9 @@ public class IncrementalCompileTask implements JavaCompiler.CompilationTask {
             symbols.add(symbol);
         }
 
-        private Map<String, Collection<String>> getMapping() {
-            return mapping;
+        void persistMapping(File mappingFile) {
+            SourceClassesMappingFileAccessor.writeSourceClassesMappingFile(mappingFile, mapping);
         }
+
     }
 }
